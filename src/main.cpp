@@ -1,19 +1,23 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
+#include <roapi.h>
+#include <winstring.h>
 #include <mmdeviceapi.h>
 #include <wrl/client.h>
 
 #include <atomic>
 #include <string>
-#include <thread>
 
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "runtimeobject.lib")
 
 using Microsoft::WRL::ComPtr;
 
 // Windows Audio Policy Config
-// Variant used by Windows 10/11 for per-application audio routing.
+//
+// This is an undocumented Windows interface used by several
+// per-application audio routing implementations.
 
 struct __declspec(uuid("ab3d4648-e242-459f-b02f-541c70306324"))
 IAudioPolicyConfigFactory : IUnknown
@@ -42,11 +46,13 @@ IAudioPolicyConfigFactory : IUnknown
         UINT32 processId,
         int flow,
         int role,
-        LPCWSTR deviceId) = 0;
+        LPCWSTR deviceId
+    ) = 0;
 };
 
 static std::atomic<bool> g_running{ true };
 static std::wstring g_lastDevice;
+
 
 static std::wstring GetDefaultRenderDevice()
 {
@@ -72,19 +78,20 @@ static std::wstring GetDefaultRenderDevice()
     if (FAILED(hr))
         return {};
 
-    LPWSTR id = nullptr;
+    LPWSTR deviceId = nullptr;
 
-    hr = device->GetId(&id);
+    hr = device->GetId(&deviceId);
 
-    if (FAILED(hr) || !id)
+    if (FAILED(hr) || deviceId == nullptr)
         return {};
 
-    std::wstring result(id);
+    std::wstring result(deviceId);
 
-    CoTaskMemFree(id);
+    CoTaskMemFree(deviceId);
 
     return result;
 }
+
 
 static bool RouteGTAAudio(const std::wstring& deviceId)
 {
@@ -110,7 +117,9 @@ static bool RouteGTAAudio(const std::wstring& deviceId)
     hr = RoGetActivationFactory(
         className,
         __uuidof(IAudioPolicyConfigFactory),
-        reinterpret_cast<void**>(factory.GetAddressOf())
+        reinterpret_cast<void**>(
+            factory.GetAddressOf()
+        )
     );
 
     WindowsDeleteString(className);
@@ -118,17 +127,20 @@ static bool RouteGTAAudio(const std::wstring& deviceId)
     if (FAILED(hr))
         return false;
 
-    const UINT32 pid = GetCurrentProcessId();
+    const UINT32 processId = GetCurrentProcessId();
 
+    // Audio flow:
     // eRender = 0
-    // Console = 0
-    // Multimedia = 1
-    // Communications = 2
+    //
+    // Audio roles:
+    // eConsole       = 0
+    // eMultimedia    = 1
+    // eCommunications = 2
 
     bool success = false;
 
     hr = factory->SetPersistedDefaultAudioEndpoint(
-        pid,
+        processId,
         0,
         0,
         deviceId.c_str()
@@ -137,7 +149,7 @@ static bool RouteGTAAudio(const std::wstring& deviceId)
     if (SUCCEEDED(hr))
     {
         hr = factory->SetPersistedDefaultAudioEndpoint(
-            pid,
+            processId,
             0,
             1,
             deviceId.c_str()
@@ -147,17 +159,19 @@ static bool RouteGTAAudio(const std::wstring& deviceId)
     if (SUCCEEDED(hr))
     {
         hr = factory->SetPersistedDefaultAudioEndpoint(
-            pid,
+            processId,
             0,
             2,
             deviceId.c_str()
         );
     }
 
-    success = SUCCEEDED(hr);
+    if (SUCCEEDED(hr))
+        success = true;
 
     return success;
 }
+
 
 static DWORD WINAPI AudioThread(LPVOID)
 {
@@ -169,7 +183,7 @@ static DWORD WINAPI AudioThread(LPVOID)
     if (FAILED(hr))
         return 0;
 
-    // GTA needs time to initialize its audio system.
+    // Give GTA SA time to initialize.
     Sleep(5000);
 
     while (g_running)
@@ -177,15 +191,18 @@ static DWORD WINAPI AudioThread(LPVOID)
         std::wstring currentDevice =
             GetDefaultRenderDevice();
 
-        if (!currentDevice.empty() &&
-            currentDevice != g_lastDevice)
+        if (!currentDevice.empty())
         {
-            if (RouteGTAAudio(currentDevice))
+            if (currentDevice != g_lastDevice)
             {
-                g_lastDevice = currentDevice;
+                if (RouteGTAAudio(currentDevice))
+                {
+                    g_lastDevice = currentDevice;
+                }
             }
         }
 
+        // Check for device changes every 500 ms.
         Sleep(500);
     }
 
@@ -194,11 +211,16 @@ static DWORD WINAPI AudioThread(LPVOID)
     return 0;
 }
 
+
 BOOL APIENTRY DllMain(
     HMODULE hModule,
     DWORD reason,
-    LPVOID)
+    LPVOID reserved
+)
 {
+    UNREFERENCED_PARAMETER(hModule);
+    UNREFERENCED_PARAMETER(reserved);
+
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(hModule);
@@ -212,11 +234,12 @@ BOOL APIENTRY DllMain(
             nullptr
         );
 
-        if (thread)
+        if (thread != nullptr)
+        {
             CloseHandle(thread);
+        }
     }
-
-    if (reason == DLL_PROCESS_DETACH)
+    else if (reason == DLL_PROCESS_DETACH)
     {
         g_running = false;
     }
