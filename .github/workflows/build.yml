@@ -13,24 +13,29 @@ jobs:
     runs-on: windows-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure
+      - name: Configure CMake
         run: cmake -S . -B build -A Win32
 
-      - name: Build
+      - name: Build Release
         run: cmake --build build --config Release
 
-      - name: Verify
+      - name: Verify ASI
         shell: powershell
         run: |
+          Write-Host "Searching for ASI..."
+
           Get-ChildItem -Recurse build
-          
+
           if (!(Test-Path "build/Release/AudioDeviceRedirect.asi")) {
-            Write-Error "ASI file was not produced"
+            Write-Error "AudioDeviceRedirect.asi was not produced!"
             exit 1
           }
+
+          Write-Host "ASI successfully created."
 
       - name: Upload ASI
         uses: actions/upload-artifact@v4
