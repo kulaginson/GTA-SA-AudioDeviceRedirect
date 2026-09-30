@@ -9,7 +9,6 @@ add_library(AudioDeviceRedirect SHARED
 target_compile_features(AudioDeviceRedirect PRIVATE cxx_std_17)
 
 target_compile_definitions(AudioDeviceRedirect PRIVATE
-    WIN32_LEAN_AND_MEAN
     UNICODE
     _UNICODE
 )
