@@ -17,11 +17,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+
       - name: Configure CMake
         run: cmake -S . -B build -A Win32
 
+
       - name: Build Release
         run: cmake --build build --config Release
+
 
       - name: Verify ASI
         shell: powershell
@@ -35,7 +38,8 @@ jobs:
             exit 1
           }
 
-          Write-Host "ASI successfully created."
+          Write-Host "AudioDeviceRedirect.asi successfully created."
+
 
       - name: Upload ASI
         uses: actions/upload-artifact@v4
