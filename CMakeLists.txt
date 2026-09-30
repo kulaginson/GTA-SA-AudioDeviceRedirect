@@ -6,7 +6,9 @@ add_library(AudioDeviceRedirect SHARED
     src/main.cpp
 )
 
-target_compile_features(AudioDeviceRedirect PRIVATE cxx_std_17)
+target_compile_features(AudioDeviceRedirect PRIVATE
+    cxx_std_17
+)
 
 target_compile_definitions(AudioDeviceRedirect PRIVATE
     UNICODE
