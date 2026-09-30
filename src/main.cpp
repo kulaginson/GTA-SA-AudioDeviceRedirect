@@ -2,11 +2,9 @@
 
 #include <windows.h>
 #include <mmdeviceapi.h>
-#include <functiondiscoverykeys_devpkey.h>
 
 #include <fstream>
 #include <string>
-#include <sstream>
 #include <iomanip>
 
 #pragma comment(lib, "ole32.lib")
@@ -36,7 +34,6 @@ static std::string GetDllDirectory()
     return result.substr(0, slash + 1);
 }
 
-
 static void Log(const std::string& text)
 {
     std::string filename =
@@ -64,7 +61,6 @@ static void Log(const std::string& text)
          << text
          << std::endl;
 }
-
 
 static std::string WideToUtf8(const std::wstring& text)
 {
@@ -101,24 +97,11 @@ static std::string WideToUtf8(const std::wstring& text)
     return result;
 }
 
-
-static void LogCurrentAudioDevice()
+static std::string GetDefaultDeviceId()
 {
-    HRESULT hr = CoInitializeEx(
-        nullptr,
-        COINIT_MULTITHREADED
-    );
-
-    if (FAILED(hr))
-    {
-        Log("CoInitializeEx failed.");
-        return;
-    }
-
-
     IMMDeviceEnumerator* enumerator = nullptr;
 
-    hr = CoCreateInstance(
+    HRESULT hr = CoCreateInstance(
         __uuidof(MMDeviceEnumerator),
         nullptr,
         CLSCTX_ALL,
@@ -127,12 +110,7 @@ static void LogCurrentAudioDevice()
     );
 
     if (FAILED(hr))
-    {
-        Log("CoCreateInstance(MMDeviceEnumerator) failed.");
-        CoUninitialize();
-        return;
-    }
-
+        return {};
 
     IMMDevice* device = nullptr;
 
@@ -144,177 +122,112 @@ static void LogCurrentAudioDevice()
 
     if (FAILED(hr))
     {
-        Log("GetDefaultAudioEndpoint failed.");
         enumerator->Release();
-        CoUninitialize();
-        return;
+        return {};
     }
-
 
     LPWSTR deviceId = nullptr;
 
     hr = device->GetId(&deviceId);
 
+    std::string result;
+
     if (SUCCEEDED(hr) && deviceId)
     {
-        Log(
-            "Default render device ID: " +
-            WideToUtf8(deviceId)
-        );
-
+        result = WideToUtf8(deviceId);
         CoTaskMemFree(deviceId);
     }
-    else
-    {
-        Log("IMMDevice::GetId failed.");
-    }
-
-
-    IPropertyStore* properties = nullptr;
-
-    hr = device->OpenPropertyStore(
-        STGM_READ,
-        &properties
-    );
-
-    if (SUCCEEDED(hr))
-    {
-        PROPVARIANT value;
-
-        PropVariantInit(&value);
-
-        hr = properties->GetValue(
-            PKEY_Device_FriendlyName,
-            &value
-        );
-
-        if (SUCCEEDED(hr) &&
-            value.vt == VT_LPWSTR &&
-            value.pwsz)
-        {
-            Log(
-                "Default render device name: " +
-                WideToUtf8(value.pwsz)
-            );
-        }
-
-        PropVariantClear(&value);
-
-        properties->Release();
-    }
-
 
     device->Release();
     enumerator->Release();
 
-    CoUninitialize();
+    return result;
 }
-
 
 static DWORD WINAPI DiagnosticThread(LPVOID)
 {
     Log("========================================");
     Log("AudioDeviceRedirect diagnostic build");
     Log("Plugin loaded successfully.");
-    Log("Process ID: " +
-        std::to_string(GetCurrentProcessId()));
-
-    Log("Waiting for GTA initialization...");
+    Log(
+        "Process ID: " +
+        std::to_string(GetCurrentProcessId())
+    );
 
     Sleep(3000);
 
-    Log("Checking current Windows audio device...");
+    HRESULT hr = CoInitializeEx(
+        nullptr,
+        COINIT_MULTITHREADED
+    );
 
-    LogCurrentAudioDevice();
+    if (FAILED(hr))
+    {
+        Log("CoInitializeEx failed.");
+        return 0;
+    }
+
+    Log("Checking Windows default audio device...");
+
+    std::string lastDevice =
+        GetDefaultDeviceId();
+
+    if (lastDevice.empty())
+    {
+        Log("Could not detect default render device.");
+    }
+    else
+    {
+        Log(
+            "Initial default render device ID: " +
+            lastDevice
+        );
+    }
 
     Log("Starting device monitoring.");
 
-
-    std::string lastDevice;
-
-
     while (true)
     {
-        // We intentionally DO NOT modify GTA audio.
-        // We only read the Windows default device.
+        std::string currentDevice =
+            GetDefaultDeviceId();
 
-        HRESULT hr = CoInitializeEx(
-            nullptr,
-            COINIT_MULTITHREADED
-        );
-
-        if (SUCCEEDED(hr))
+        if (!currentDevice.empty() &&
+            currentDevice != lastDevice)
         {
-            IMMDeviceEnumerator* enumerator = nullptr;
-
-            hr = CoCreateInstance(
-                __uuidof(MMDeviceEnumerator),
-                nullptr,
-                CLSCTX_ALL,
-                __uuidof(IMMDeviceEnumerator),
-                reinterpret_cast<void**>(&enumerator)
+            Log(
+                "Windows default audio device changed!"
             );
 
-            if (SUCCEEDED(hr))
+            Log(
+                "New device ID: " +
+                currentDevice
+            );
+
+            lastDevice = currentDevice;
+        }
+
+        HMODULE dsound =
+            GetModuleHandleW(L"dsound.dll");
+
+        if (dsound)
+        {
+            static bool loggedDSound = false;
+
+            if (!loggedDSound)
             {
-                IMMDevice* device = nullptr;
-
-                hr = enumerator->GetDefaultAudioEndpoint(
-                    eRender,
-                    eMultimedia,
-                    &device
-                );
-
-                if (SUCCEEDED(hr))
-                {
-                    LPWSTR deviceId = nullptr;
-
-                    hr = device->GetId(&deviceId);
-
-                    if (SUCCEEDED(hr) && deviceId)
-                    {
-                        std::string current =
-                            WideToUtf8(deviceId);
-
-                        if (current != lastDevice)
-                        {
-                            Log(
-                                "Windows default audio device changed: " +
-                                current
-                            );
-
-                            lastDevice = current;
-
-                            CoTaskMemFree(deviceId);
-
-                            device->Release();
-                            enumerator->Release();
-
-                            CoUninitialize();
-
-                            Sleep(500);
-
-                            continue;
-                        }
-
-                        CoTaskMemFree(deviceId);
-                    }
-
-                    device->Release();
-                }
-
-                enumerator->Release();
+                Log("dsound.dll is loaded in GTA process.");
+                loggedDSound = true;
             }
-
-            CoUninitialize();
         }
 
         Sleep(500);
     }
 
+    // Never reached.
+    CoUninitialize();
+
     return 0;
 }
-
 
 BOOL APIENTRY DllMain(
     HMODULE hModule,
@@ -330,9 +243,6 @@ BOOL APIENTRY DllMain(
 
         DisableThreadLibraryCalls(hModule);
 
-        // Do not perform any audio manipulation here.
-        // Only start the diagnostic thread.
-
         HANDLE thread = CreateThread(
             nullptr,
             0,
@@ -343,9 +253,7 @@ BOOL APIENTRY DllMain(
         );
 
         if (thread)
-        {
             CloseHandle(thread);
-        }
     }
 
     return TRUE;
