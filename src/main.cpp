@@ -14,23 +14,30 @@
 
 using Microsoft::WRL::ComPtr;
 
+
+// ============================================================
 // Windows Audio Policy Config
 //
-// This is an undocumented Windows interface used by several
-// per-application audio routing implementations.
+// Windows 10/11 uses this internal interface for the
+// per-application output device selector.
+//
+// This is an undocumented interface.
+// The 21H2 interface contains 19 methods before
+// SetPersistedDefaultAudioEndpoint.
+// ============================================================
 
 struct __declspec(uuid("ab3d4648-e242-459f-b02f-541c70306324"))
 IAudioPolicyConfigFactory : IUnknown
 {
-    virtual HRESULT STDMETHODCALLTYPE Unknown1() = 0;
-    virtual HRESULT STDMETHODCALLTYPE Unknown2() = 0;
-    virtual HRESULT STDMETHODCALLTYPE Unknown3() = 0;
-    virtual HRESULT STDMETHODCALLTYPE Unknown4() = 0;
-    virtual HRESULT STDMETHODCALLTYPE Unknown5() = 0;
-    virtual HRESULT STDMETHODCALLTYPE Unknown6() = 0;
-    virtual HRESULT STDMETHODCALLTYPE Unknown7() = 0;
-    virtual HRESULT STDMETHODCALLTYPE Unknown8() = 0;
-    virtual HRESULT STDMETHODCALLTYPE Unknown9() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown01() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown02() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown03() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown04() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown05() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown06() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown07() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown08() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Unknown09() = 0;
     virtual HRESULT STDMETHODCALLTYPE Unknown10() = 0;
     virtual HRESULT STDMETHODCALLTYPE Unknown11() = 0;
     virtual HRESULT STDMETHODCALLTYPE Unknown12() = 0;
@@ -46,13 +53,32 @@ IAudioPolicyConfigFactory : IUnknown
         UINT32 processId,
         int flow,
         int role,
-        LPCWSTR deviceId
+        HSTRING deviceId
     ) = 0;
+
+    virtual HRESULT STDMETHODCALLTYPE GetPersistedDefaultAudioEndpoint(
+        UINT32 processId,
+        int flow,
+        int role,
+        HSTRING* deviceId
+    ) = 0;
+
+    virtual HRESULT STDMETHODCALLTYPE ClearAllPersistedApplicationDefaultEndpoints() = 0;
 };
 
+
+// ============================================================
+// Globals
+// ============================================================
+
 static std::atomic<bool> g_running{ true };
+
 static std::wstring g_lastDevice;
 
+
+// ============================================================
+// Get current Windows default playback device
+// ============================================================
 
 static std::wstring GetDefaultRenderDevice()
 {
@@ -93,10 +119,19 @@ static std::wstring GetDefaultRenderDevice()
 }
 
 
+// ============================================================
+// Set GTA process audio output
+// ============================================================
+
 static bool RouteGTAAudio(const std::wstring& deviceId)
 {
     if (deviceId.empty())
         return false;
+
+
+    // --------------------------------------------------------
+    // Create WinRT class name HSTRING
+    // --------------------------------------------------------
 
     HSTRING className = nullptr;
 
@@ -111,6 +146,11 @@ static bool RouteGTAAudio(const std::wstring& deviceId)
 
     if (FAILED(hr))
         return false;
+
+
+    // --------------------------------------------------------
+    // Get IAudioPolicyConfigFactory
+    // --------------------------------------------------------
 
     ComPtr<IAudioPolicyConfigFactory> factory;
 
@@ -127,72 +167,114 @@ static bool RouteGTAAudio(const std::wstring& deviceId)
     if (FAILED(hr))
         return false;
 
-    const UINT32 processId = GetCurrentProcessId();
 
-    // Audio flow:
+    // --------------------------------------------------------
+    // IMPORTANT:
+    //
+    // SetPersistedDefaultAudioEndpoint expects HSTRING,
+    // NOT LPCWSTR.
+    // --------------------------------------------------------
+
+    HSTRING deviceHString = nullptr;
+
+    hr = WindowsCreateString(
+        deviceId.c_str(),
+        static_cast<UINT32>(deviceId.size()),
+        &deviceHString
+    );
+
+    if (FAILED(hr))
+        return false;
+
+
+    const UINT32 processId =
+        GetCurrentProcessId();
+
+
+    // --------------------------------------------------------
     // eRender = 0
     //
-    // Audio roles:
-    // eConsole       = 0
-    // eMultimedia    = 1
+    // eConsole        = 0
+    // eMultimedia     = 1
     // eCommunications = 2
+    // --------------------------------------------------------
 
-    bool success = false;
+    bool success = true;
+
 
     hr = factory->SetPersistedDefaultAudioEndpoint(
         processId,
         0,
         0,
-        deviceId.c_str()
+        deviceHString
     );
 
-    if (SUCCEEDED(hr))
+    if (FAILED(hr))
+        success = false;
+
+
+    if (success)
     {
         hr = factory->SetPersistedDefaultAudioEndpoint(
             processId,
             0,
             1,
-            deviceId.c_str()
+            deviceHString
         );
+
+        if (FAILED(hr))
+            success = false;
     }
 
-    if (SUCCEEDED(hr))
+
+    if (success)
     {
         hr = factory->SetPersistedDefaultAudioEndpoint(
             processId,
             0,
             2,
-            deviceId.c_str()
+            deviceHString
         );
+
+        if (FAILED(hr))
+            success = false;
     }
 
-    if (SUCCEEDED(hr))
-        success = true;
+
+    WindowsDeleteString(deviceHString);
 
     return success;
 }
 
 
+// ============================================================
+// Audio monitoring thread
+// ============================================================
+
 static DWORD WINAPI AudioThread(LPVOID)
 {
-    HRESULT hr = CoInitializeEx(
-        nullptr,
-        COINIT_MULTITHREADED
+    // Initialize COM/WinRT for this thread.
+    HRESULT hr = RoInitialize(
+        RO_INIT_MULTITHREADED
     );
 
     if (FAILED(hr))
         return 0;
 
-    // Give GTA SA time to initialize.
+
+    // Give GTA time to finish initialization.
     Sleep(5000);
+
 
     while (g_running)
     {
         std::wstring currentDevice =
             GetDefaultRenderDevice();
 
+
         if (!currentDevice.empty())
         {
+            // Device changed?
             if (currentDevice != g_lastDevice)
             {
                 if (RouteGTAAudio(currentDevice))
@@ -202,15 +284,21 @@ static DWORD WINAPI AudioThread(LPVOID)
             }
         }
 
-        // Check for device changes every 500 ms.
+
+        // Check every 500 ms.
         Sleep(500);
     }
 
-    CoUninitialize();
+
+    RoUninitialize();
 
     return 0;
 }
 
+
+// ============================================================
+// DLL entry point
+// ============================================================
 
 BOOL APIENTRY DllMain(
     HMODULE hModule,
@@ -218,12 +306,13 @@ BOOL APIENTRY DllMain(
     LPVOID reserved
 )
 {
-    UNREFERENCED_PARAMETER(hModule);
     UNREFERENCED_PARAMETER(reserved);
+
 
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(hModule);
+
 
         HANDLE thread = CreateThread(
             nullptr,
@@ -234,15 +323,19 @@ BOOL APIENTRY DllMain(
             nullptr
         );
 
+
         if (thread != nullptr)
         {
             CloseHandle(thread);
         }
     }
-    else if (reason == DLL_PROCESS_DETACH)
+
+
+    if (reason == DLL_PROCESS_DETACH)
     {
         g_running = false;
     }
+
 
     return TRUE;
 }
