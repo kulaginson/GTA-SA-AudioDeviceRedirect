@@ -13,11 +13,11 @@ target_compile_features(AudioDeviceRedirect PRIVATE
 target_compile_definitions(AudioDeviceRedirect PRIVATE
     UNICODE
     _UNICODE
+    WIN32_LEAN_AND_MEAN
 )
 
 target_link_libraries(AudioDeviceRedirect PRIVATE
     ole32
-    runtimeobject
 )
 
 set_target_properties(AudioDeviceRedirect PROPERTIES
